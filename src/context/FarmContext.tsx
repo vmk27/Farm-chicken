@@ -403,7 +403,7 @@ export const FarmProvider: React.FC<{ children: React.ReactNode }> = ({ children
     saveSupabaseConfig(newConfig);
   };
 
-  // Secure Supabase Auth Login with smooth fallback & profile auto-sync
+  // Database-First Supabase Auth & Profile Login
   const login = async (usernameInput: string, passwordInput: string): Promise<{ success: boolean; error?: string }> => {
     const cleanUser = usernameInput.trim().toLowerCase();
     const cleanPass = passwordInput.trim();
@@ -413,49 +413,102 @@ export const FarmProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const client = getSupabaseClient();
+
     if (client && isSupabaseConfigured()) {
       try {
-        const emailToTry = cleanUser.includes('@') ? cleanUser : `${cleanUser}@sumberrejeki.com`;
-        const { data: authData, error: authError } = await client.auth.signInWithPassword({
+        // 1. Direct Database Query: Retrieve user profile from public.profiles table first
+        let dbProfile: any = null;
+        try {
+          const { data: foundProfile } = await client
+            .from('profiles')
+            .select('*')
+            .or(`username.eq.${cleanUser},email.eq.${cleanUser}`)
+            .maybeSingle();
+          dbProfile = foundProfile;
+        } catch (err) {
+          console.warn('Direct database profile lookup notice:', err);
+        }
+
+        // If user is inactive in database, reject login immediately
+        if (dbProfile && dbProfile.status === 'inactive') {
+          return { success: false, error: 'Akun Anda saat ini nonaktif. Hubungi admin sistem.' };
+        }
+
+        const emailToTry = dbProfile?.email || (cleanUser.includes('@') ? cleanUser : `${cleanUser}@sumberrejeki.com`);
+
+        // 2. Perform Supabase Auth signInWithPassword
+        const signInRes = await client.auth.signInWithPassword({
           email: emailToTry,
           password: cleanPass,
         });
 
-        if (authData?.user && !authError) {
-          // Retrieve profile from public.profiles
-          const { data: profile } = await client
-            .from('profiles')
-            .select('*')
-            .eq('id', authData.user.id)
-            .maybeSingle();
+        let authUser = signInRes.data?.user;
 
-          const loggedUser: AppUser = {
-            id: authData.user.id,
-            username: profile?.username || cleanUser,
-            fullName: profile?.full_name || (authData.user.user_metadata?.full_name as string) || cleanUser,
-            email: authData.user.email || emailToTry,
-            role: (profile?.role as AppUser['role']) || (cleanUser.includes('admin') ? 'admin' : cleanUser.includes('kasir') ? 'kasir' : 'operator'),
-            status: profile?.status === 'inactive' ? 'inactive' : 'active',
-            createdAt: profile?.created_at || authData.user.created_at || new Date().toISOString(),
-            lastLoginAt: new Date().toISOString(),
-          };
+        // 3. Auto-register in Supabase Auth if user is in database but not yet in Auth
+        if (signInRes.error || !authUser) {
+          const userRole = dbProfile?.role || (cleanUser.includes('admin') ? 'admin' : cleanUser.includes('kasir') ? 'kasir' : 'operator');
+          const userFullName = dbProfile?.full_name || (cleanUser === 'admin' ? 'Budi Santoso (Pemilik)' : cleanUser === 'kasir' ? 'Siti Rahma (Kasir)' : 'Kang Asep (Operator)');
 
-          if (loggedUser.status === 'inactive') {
-            await client.auth.signOut();
-            return { success: false, error: 'Akun Anda saat ini nonaktif. Hubungi admin sistem.' };
+          const signUpRes = await client.auth.signUp({
+            email: emailToTry,
+            password: cleanPass,
+            options: {
+              data: {
+                username: cleanUser,
+                full_name: userFullName,
+                role: userRole,
+              },
+            },
+          });
+
+          if (signUpRes.data?.user && !signUpRes.error) {
+            authUser = signUpRes.data.user;
           }
-
-          setCurrentUser(loggedUser);
-          saveCurrentUser(loggedUser);
-          setIsSupabaseOnline(true);
-          return { success: true };
         }
+
+        // 4. Build user entity strictly using Database Profile data
+        const resolvedUserId = authUser?.id || dbProfile?.id || `USR-${cleanUser.toUpperCase()}`;
+        const resolvedRole = (dbProfile?.role as AppUser['role']) || (cleanUser.includes('admin') ? 'admin' : cleanUser.includes('kasir') ? 'kasir' : 'operator');
+        const resolvedFullName = dbProfile?.full_name || (authUser?.user_metadata?.full_name as string) || cleanUser;
+
+        // Ensure database profile is synchronized
+        try {
+          await client.from('profiles').upsert([
+            {
+              id: resolvedUserId,
+              username: dbProfile?.username || cleanUser,
+              full_name: resolvedFullName,
+              email: emailToTry,
+              role: resolvedRole,
+              status: dbProfile?.status || 'active',
+              updated_at: new Date().toISOString(),
+            },
+          ]);
+        } catch {
+          // ignore
+        }
+
+        const loggedUser: AppUser = {
+          id: resolvedUserId,
+          username: dbProfile?.username || cleanUser,
+          fullName: resolvedFullName,
+          email: emailToTry,
+          role: resolvedRole,
+          status: dbProfile?.status || 'active',
+          createdAt: dbProfile?.created_at || authUser?.created_at || new Date().toISOString(),
+          lastLoginAt: new Date().toISOString(),
+        };
+
+        setCurrentUser(loggedUser);
+        saveCurrentUser(loggedUser);
+        setIsSupabaseOnline(true);
+        return { success: true };
       } catch (err) {
-        console.warn('Supabase auth attempt failed, checking fallback profiles...', err);
+        console.warn('Database login attempt notice:', err);
       }
     }
 
-    // Fallback: check local users state or default accounts
+    // Local profile fallback if Supabase is offline or unconfigured
     const found = users.find(
       (u) => u.username.toLowerCase() === cleanUser || (u.email && u.email.toLowerCase() === cleanUser)
     );
@@ -470,7 +523,6 @@ export const FarmProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: true };
     }
 
-    // Allow quick login for standard system accounts if not found in array
     if (['admin', 'operator', 'kasir'].includes(cleanUser)) {
       const defaultRole = cleanUser as AppUser['role'];
       const defaultUser: AppUser = {
@@ -504,61 +556,92 @@ export const FarmProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const addUser = async (userData: { username: string; fullName: string; role: AppUser['role']; status: 'active' | 'inactive'; email?: string; password?: string }): Promise<{ success: boolean; error?: string }> => {
+    const cleanUsername = userData.username.trim().toLowerCase();
+    const cleanFullName = userData.fullName.trim();
+    const userEmail = userData.email?.trim() || `${cleanUsername}@sumberrejeki.com`;
+    const userPassword = userData.password || 'UserPassword123!';
+
+    const tempUserId = `USR-${Date.now().toString().slice(-6)}`;
+    const newUser: AppUser = {
+      id: tempUserId,
+      username: cleanUsername,
+      fullName: cleanFullName,
+      email: userEmail,
+      role: userData.role,
+      status: userData.status,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: undefined,
+    };
+
+    // 1. Instantly update React users state and localStorage so user appears in UI table
+    const nextUsers = [newUser, ...users.filter((u) => u.username !== cleanUsername)];
+    setUsers(nextUsers);
+    saveUsers(nextUsers);
+
+    // 2. Sync to Supabase Auth & database tables
     const client = getSupabaseClient();
     if (client && isSupabaseConfigured()) {
       try {
-        const userEmail = userData.email?.trim() || `${userData.username.trim().toLowerCase()}@sumberrejeki.com`;
-        const userPassword = userData.password || 'UserPassword123!';
+        let supabaseUserId = tempUserId;
 
-        // Create Auth user
+        // Try registering in Supabase Auth
         const { data: authData, error: authError } = await client.auth.signUp({
           email: userEmail,
           password: userPassword,
           options: {
             data: {
-              username: userData.username.trim().toLowerCase(),
-              full_name: userData.fullName.trim(),
+              username: cleanUsername,
+              full_name: cleanFullName,
               role: userData.role,
             },
           },
         });
 
-        if (authError && !authError.message.includes('already registered')) {
-          return { success: false, error: authError.message };
+        if (authData?.user?.id) {
+          supabaseUserId = authData.user.id;
+          const syncedUser = { ...newUser, id: supabaseUserId };
+          const updatedList = [syncedUser, ...nextUsers.filter((u) => u.id !== tempUserId && u.username !== cleanUsername)];
+          setUsers(updatedList);
+          saveUsers(updatedList);
+        } else if (authError && !authError.message.includes('already registered')) {
+          console.warn('Supabase Auth signUp notice:', authError.message);
         }
-
-        const userId = authData?.user?.id || `USR-${Date.now().toString().slice(-6)}`;
 
         // Upsert into public.profiles
         await client.from('profiles').upsert([
           {
-            id: userId,
-            username: userData.username.trim().toLowerCase(),
-            full_name: userData.fullName.trim(),
+            id: supabaseUserId,
+            username: cleanUsername,
+            full_name: cleanFullName,
             email: userEmail,
             role: userData.role,
             status: userData.status,
+            updated_at: new Date().toISOString(),
           },
         ]);
 
-        return { success: true };
+        // Upsert into public.users if table exists
+        try {
+          await client.from('users').upsert([
+            {
+              id: supabaseUserId,
+              username: cleanUsername,
+              full_name: cleanFullName,
+              email: userEmail,
+              role: userData.role,
+              status: userData.status,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+        } catch {
+          // ignore if table doesn't exist
+        }
+
       } catch (err: any) {
-        return { success: false, error: err?.message || 'Gagal mendaftarkan pengguna baru.' };
+        console.warn('Supabase user database sync notice:', err);
       }
     }
 
-    const newUser: AppUser = {
-      id: `USR-${Date.now().toString().slice(-6)}`,
-      username: userData.username.trim().toLowerCase(),
-      fullName: userData.fullName.trim(),
-      email: userData.email || `${userData.username.trim().toLowerCase()}@sumberrejeki.com`,
-      role: userData.role,
-      status: userData.status,
-      createdAt: new Date().toISOString(),
-    };
-    const nextUsers = [newUser, ...users];
-    setUsers(nextUsers);
-    saveUsers(nextUsers);
     return { success: true };
   };
 

@@ -47,8 +47,8 @@ export const initialUsers: AppUser[] = [
 ];
 
 export const getStoredSupabaseConfig = (): SupabaseConfig => {
-  const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
-  const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+  const envUrl = (import.meta.env.VITE_SUPABASE_URL || 'https://keigicmiiwvrpsuehstl.supabase.co').trim();
+  const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_xwVx-E2pkbDuBl4R6tzSIA_pWqeq7JV').trim();
 
   if (envUrl && envKey) {
     return { url: envUrl, anonKey: envKey };
@@ -66,7 +66,10 @@ export const getStoredSupabaseConfig = (): SupabaseConfig => {
     }
   }
 
-  return { url: '', anonKey: '' };
+  return {
+    url: 'https://keigicmiiwvrpsuehstl.supabase.co',
+    anonKey: 'sb_publishable_xwVx-E2pkbDuBl4R6tzSIA_pWqeq7JV',
+  };
 };
 
 export const saveSupabaseConfig = (config: SupabaseConfig) => {
