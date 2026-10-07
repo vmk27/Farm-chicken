@@ -1,0 +1,6 @@
+{
+  "name": "TelurPro - Sistem Manajemen Peternakan & Penjualan Telur",
+  "description": "Aplikasi manajemen peternakan dan penjualan telur ayam: pencatatan produksi, penjualan harian, sisa stok, laba rugi real-time, laporan grafik bulanan, serta konversi alokasi modal produksi otomatis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
