@@ -444,10 +444,19 @@ export const FarmProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         let authUser = signInRes.data?.user;
 
-        // 3. Auto-register in Supabase Auth if user is in database but not yet in Auth
+        // 3. Handle authentication failures & verify password strictly
         if (signInRes.error || !authUser) {
-          const userRole = dbProfile?.role || (cleanUser.includes('admin') ? 'admin' : cleanUser.includes('kasir') ? 'kasir' : 'operator');
-          const userFullName = dbProfile?.full_name || (cleanUser === 'admin' ? 'Budi Santoso (Pemilik)' : cleanUser === 'kasir' ? 'Siti Rahma (Kasir)' : 'Kang Asep (Operator)');
+          // If the profile already exists in public.profiles table, any signIn error is a WRONG PASSWORD!
+          if (dbProfile) {
+            return {
+              success: false,
+              error: 'Username atau kata sandi yang Anda masukkan tidak sesuai.',
+            };
+          }
+
+          // If the profile doesn't exist yet (e.g. first login of default system roles: admin, operator, kasir)
+          const defaultRole = cleanUser.includes('admin') ? 'admin' : cleanUser.includes('kasir') ? 'kasir' : 'operator';
+          const userFullName = cleanUser === 'admin' ? 'Budi Santoso (Pemilik)' : cleanUser === 'kasir' ? 'Siti Rahma (Kasir)' : 'Kang Asep (Operator)';
 
           const signUpRes = await client.auth.signUp({
             email: emailToTry,
@@ -456,20 +465,25 @@ export const FarmProvider: React.FC<{ children: React.ReactNode }> = ({ children
               data: {
                 username: cleanUser,
                 full_name: userFullName,
-                role: userRole,
+                role: defaultRole,
               },
             },
           });
 
           if (signUpRes.data?.user && !signUpRes.error) {
             authUser = signUpRes.data.user;
+          } else {
+            return {
+              success: false,
+              error: 'Username atau kata sandi yang Anda masukkan tidak sesuai.',
+            };
           }
         }
 
         // 4. Build user entity strictly using Database Profile data
-        const resolvedUserId = authUser?.id || dbProfile?.id || `USR-${cleanUser.toUpperCase()}`;
+        const resolvedUserId = authUser.id;
         const resolvedRole = (dbProfile?.role as AppUser['role']) || (cleanUser.includes('admin') ? 'admin' : cleanUser.includes('kasir') ? 'kasir' : 'operator');
-        const resolvedFullName = dbProfile?.full_name || (authUser?.user_metadata?.full_name as string) || cleanUser;
+        const resolvedFullName = dbProfile?.full_name || (authUser.user_metadata?.full_name as string) || cleanUser;
 
         // Ensure database profile is synchronized
         try {
@@ -597,14 +611,28 @@ export const FarmProvider: React.FC<{ children: React.ReactNode }> = ({ children
           },
         });
 
+        if (authError) {
+          const errMsg = authError.message.toLowerCase();
+          if (errMsg.includes('rate limit') || errMsg.includes('exceeded') || authError.status === 429) {
+            return {
+              success: false,
+              error: 'Batas pendaftaran pengguna baru terlampaui (Rate Limit Exceeded). Supabase membatasi pembuatan akun baru dalam waktu singkat. Silakan tunggu 1-2 menit sebelum mencoba lagi.',
+            };
+          }
+          if (!errMsg.includes('already registered')) {
+            return {
+              success: false,
+              error: `Gagal mendaftarkan pengguna ke Supabase Auth: ${authError.message}`,
+            };
+          }
+        }
+
         if (authData?.user?.id) {
           supabaseUserId = authData.user.id;
           const syncedUser = { ...newUser, id: supabaseUserId };
           const updatedList = [syncedUser, ...nextUsers.filter((u) => u.id !== tempUserId && u.username !== cleanUsername)];
           setUsers(updatedList);
           saveUsers(updatedList);
-        } else if (authError && !authError.message.includes('already registered')) {
-          console.warn('Supabase Auth signUp notice:', authError.message);
         }
 
         // Upsert into public.profiles
