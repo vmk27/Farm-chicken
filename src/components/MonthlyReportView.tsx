@@ -1,4 +1,6 @@
 import React, { useState, useMemo } from 'react';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 import { useFarm } from '../context/FarmContext';
 import {
   formatRupiah,
@@ -15,6 +17,9 @@ import {
   TrendingUp,
   Award,
   FileSpreadsheet,
+  FileText,
+  Loader2,
+  Building2,
 } from 'lucide-react';
 import { ProductionSalesChart } from './charts/ProductionSalesChart';
 import { RevenueProfitChart } from './charts/RevenueProfitChart';
@@ -25,6 +30,7 @@ export const MonthlyReportView: React.FC = () => {
 
   const [selectedMonth, setSelectedMonth] = useState('2026-10'); // YYYY-MM
   const [activeReportChart, setActiveReportChart] = useState<'prod' | 'rev' | 'price'>('prod');
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
 
   // Filter summaries by selected month
   const monthSummaries = useMemo(() => {
@@ -109,6 +115,57 @@ export const MonthlyReportView: React.FC = () => {
     exportToCSV(`laporan_bulanan_${selectedMonth}`, exportData);
   };
 
+  const handleDownloadPDF = async () => {
+    setIsGeneratingPDF(true);
+    try {
+      const element = document.getElementById('monthly-report-printable');
+      if (!element) {
+        alert('Elemen laporan tidak ditemukan.');
+        return;
+      }
+
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+      });
+
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4',
+      });
+
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      const imgWidth = pdfWidth;
+      const imgHeight = (canvas.height * pdfWidth) / canvas.width;
+
+      let heightLeft = imgHeight;
+      let position = 0;
+
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pdfHeight;
+
+      while (heightLeft >= 0) {
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+        heightLeft -= pdfHeight;
+      }
+
+      const cleanFarmName = settings.farmName ? settings.farmName.replace(/[^a-zA-Z0-9]/g, '_') : 'TelurPro';
+      pdf.save(`Laporan_Bulanan_${cleanFarmName}_${selectedMonth}.pdf`);
+    } catch (err) {
+      console.error('Error generating PDF:', err);
+      window.print();
+    } finally {
+      setIsGeneratingPDF(false);
+    }
+  };
+
   const handlePrint = () => {
     window.print();
   };
@@ -140,6 +197,22 @@ export const MonthlyReportView: React.FC = () => {
             </select>
           </div>
 
+          {/* Download PDF Button */}
+          <button
+            type="button"
+            onClick={handleDownloadPDF}
+            disabled={isGeneratingPDF}
+            className="flex items-center gap-2 px-3.5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 active:scale-95 rounded-lg shadow-xs transition-all disabled:opacity-50"
+            title="Unduh Laporan Bulanan dalam format PDF resmi"
+          >
+            {isGeneratingPDF ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+            ) : (
+              <FileText className="w-3.5 h-3.5 text-white" />
+            )}
+            <span>{isGeneratingPDF ? 'Membuat PDF...' : 'Unduh PDF'}</span>
+          </button>
+
           <button
             type="button"
             onClick={handleExportMonthCSV}
@@ -159,6 +232,32 @@ export const MonthlyReportView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Printable Report Wrapper Container */}
+      <div id="monthly-report-printable" className="bg-white p-4 sm:p-6 rounded-2xl space-y-6">
+        {/* PDF / Print Kop & Official Letterhead Banner */}
+        <div className="pb-4 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-amber-600" />
+              <h1 className="text-xl font-black text-slate-900 tracking-tight">
+                {settings.farmName || 'CV Sumber Rejeki'}
+              </h1>
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {settings.address || 'Jl. Raya Peternakan No. 88, Subang, Jawa Barat'} • Telp: {settings.phone || '0812-3456-7890'}
+            </p>
+          </div>
+
+          <div className="text-left sm:text-right">
+            <span className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1 rounded-full inline-block">
+              LAPORAN KEUANGAN & PRODUKSI BULANAN
+            </span>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Periode: <strong className="text-slate-800">{selectedMonth}</strong> • Pemilik: {settings.ownerName || 'H. Budi Santoso'}
+            </p>
+          </div>
+        </div>
 
       {/* Monthly KPI Overview Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -412,6 +511,7 @@ export const MonthlyReportView: React.FC = () => {
             </div>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

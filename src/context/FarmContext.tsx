@@ -693,8 +693,6 @@ export const FarmProvider: React.FC<{ children: React.ReactNode }> = ({ children
     ];
   });
 
-  const [isLiveSimulating, setIsLiveSimulating] = useState<boolean>(false);
-
   // Sync to LocalStorage
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
